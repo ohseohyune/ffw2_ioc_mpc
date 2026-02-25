@@ -1,0 +1,31 @@
+# configs/cost_params.yaml
+# ys_traj.npy shape:
+#   - 물체 조인트가 있는 경우: (N, num_object_joints)
+#   - 물체 조인트가 없는 현재 scene: 오른팔 IK 목표 qpos를 저장 → (N, 7)
+# qpos 인덱스 기준:
+#   qpos[0:7]   = freejoint
+#   qpos[7:13]  = wheel steer/drive joints (6)
+#   qpos[13]    = lift_joint
+#   qpos[14:16] = head joints (2)
+#   qpos[16:23] = arm_l_joint1~7
+#   qpos[23:27] = gripper_l joints (4)
+#   qpos[27:34] = arm_r_joint1~7
+#   qpos[34:38] = gripper_r joints (4)
+
+cost_function:
+  type: quadratic
+  q_matrix_type: symmetric_full
+  r_matrix_type: diagonal
+
+  target_state_selection:
+    type: indices
+    # 현재 scene에 별도 물체 조인트가 없으므로 ys_traj는
+    # 오른팔 IK 목표 qpos(arm_r_joint1~7)를 저장합니다.
+    # 따라서 target_state_selection도 오른팔 qpos 7개를 선택합니다.
+    #
+    # TODO (권장): 조작 대상 물체를 scene에 추가하고 OBJECT_JOINT_NAMES를 채운 뒤,
+    #              아래 indices를 해당 물체 qpos 인덱스로 교체하세요.
+    #
+    # arm_r_joint1~7 의 qpos 인덱스 = 27~33
+    indices: [27, 28, 29, 30, 31, 32, 33]
+    description: "Current fallback target: right-arm desired joint qpos (IK target). Replace with object qpos indices when object joints are added."

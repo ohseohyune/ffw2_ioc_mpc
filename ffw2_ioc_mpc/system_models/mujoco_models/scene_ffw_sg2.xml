@@ -1,0 +1,80 @@
+<mujoco model="ffw_sg2 scene">
+  <include file="ffw_sg2.xml"/>
+
+  <statistic center="0.3 0 0.4" extent="1"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="120" elevation="-20"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge"
+             rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
+             markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true"
+              texrepeat="5 5" reflectance="0.2"/>
+
+    <material name="table_mat" rgba="0.6 0.5 0.4 1"/>
+    <!-- 막대기 재질(가시성 좋게 회색) -->
+    <material name="pole_mat" rgba="0.35 0.35 0.38 1"/>
+  </asset>
+
+  <worldbody>
+    <!-- Lighting -->
+    <light pos="0 0 2.5" dir="0 0 -1" directional="true"
+           diffuse="0.7 0.7 0.7" specular="0.1 0.1 0.1"/>
+    <light pos="1 -1 2" dir="-0.5 0.5 -1" directional="false"
+           diffuse="0.3 0.3 0.3"/>
+
+    <!-- Floor -->
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"
+          contype="1" conaffinity="1"
+          friction="1.0 0.005 0.0001"
+          solref="0.02 1" solimp="0.9 0.95 0.001"/>
+
+    <!-- TABLE  (상면 world-z = 0.775 m) -->
+    <body name="table" pos="0.5 0.0 0.0">
+
+      <geom name="table_top"
+            type="box" size="0.28 0.42 0.025"
+            pos="0 0 0.75"
+            material="table_mat"
+            contype="1" conaffinity="1"
+            friction="0.6 0.005 0.0001"
+            solref="0.02 1" solimp="0.2 0.95 0.001"
+            mass="28.0"/>
+
+      <geom name="leg_fl" type="cylinder" size="0.025 0.375"
+            pos=" 0.24  0.37 0.375" rgba="0.4 0.35 0.3 1"
+            mass="1.0" contype="1" conaffinity="1"/>
+      <geom name="leg_fr" type="cylinder" size="0.025 0.375"
+            pos=" 0.24 -0.37 0.375" rgba="0.4 0.35 0.3 1"
+            mass="1.0" contype="1" conaffinity="1"/>
+      <geom name="leg_bl" type="cylinder" size="0.025 0.375"
+            pos="-0.24  0.37 0.375" rgba="0.4 0.35 0.3 1"
+            mass="1.0" contype="1" conaffinity="1"/>
+      <geom name="leg_br" type="cylinder" size="0.025 0.375"
+            pos="-0.24 -0.37 0.375" rgba="0.4 0.35 0.3 1"
+            mass="1.0" contype="1" conaffinity="1"/>
+
+      <!-- ─────────────────────────────────────────────
+           중앙 막대기(장애물): 테이블 상판 중앙에 고정
+           - 반지름 1.2cm, 높이 60cm (half-height=0.30)
+           - 상판 상면 z=0.775 → 중심 z=0.775 + 0.30 = 1.075
+           - table body 좌표계 기준 pos 사용
+         ───────────────────────────────────────────── -->
+      <geom name="table_pole"
+            type="cylinder" size="0.02 0.30"
+            pos="0 -0.2 1.075"
+            material="pole_mat"
+            contype="1" conaffinity="1"
+            friction="0.6 0.01 0.0001"
+            solref="0.02 1" solimp="0.2 0.95 0.001"
+            mass="0.5"/>
+    </body>
+  </worldbody>
+
+</mujoco>

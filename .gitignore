@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# logs / cache
+*.log
+logs/
+tmp/
+
+# data artifacts (큰 데이터는 보통 제외)
+*.npy
+*.npz
+data/
+outputs/
+
+# ROS / build
+build/
+install/
+log/
+
+# OS
+.DS_Store

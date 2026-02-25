@@ -1,0 +1,41 @@
+processing:
+  segment_strategy: fixed_length
+  segment_length_seconds: 0.6
+  segment_start_seconds: 0.0
+  filter_type: savgol
+  savgol_window_length: 11
+  savgol_polyorder: 3
+
+constraint_builder:
+  include_domain_knowledge_constraints: true
+  include_convex_hull_constraints: false
+  input_torque_limits_u:
+    min: -100.0
+    max: 100.0
+
+optimizer:
+  solver: ipopt
+  max_iterations: 5000
+  num_initial_guesses: 5
+  initial_guesses_strategy: random
+  random_init_scale: 0.01
+  l1_reg_lambda: 1.0e-4
+  l1_reg_nu: 0.0
+  tol: 1.0e-6
+
+  ipopt_print_level: 0
+  print_frequency_iter: 10
+  ipopt_hessian_approximation: limited-memory
+  ipopt_sb: "yes"
+
+  casadi_print_time: false
+  casadi_verbose: false
+  casadi_verbose_init: false
+
+  show_solver_progress: true
+  suppress_casadi_output: false
+
+constraint_identification:
+  threshold_lambda: 1.0e-3
+  aggregation: sum_all
+  verbose: true
