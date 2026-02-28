@@ -27,6 +27,11 @@ REQUIRED_FILES = {
     "ys": "ys_traj.npy",
 }
 
+OPTIONAL_FILES = {
+    "ys_torque_right": "ys_torque_right_traj.npy",
+    "applied_torque_right": "applied_torque_right_traj.npy",
+}
+
 
 def load_yaml(path: str) -> dict:
     with open(path, "r") as f:
@@ -40,6 +45,11 @@ def load_episode_data(data_dir: str) -> Dict[str, np.ndarray]:
         if not os.path.exists(fpath):
             raise FileNotFoundError(f"Missing file: {fpath}")
         data[key] = np.load(fpath)
+
+    for key, fname in OPTIONAL_FILES.items():
+        fpath = os.path.join(data_dir, fname)
+        if os.path.exists(fpath):
+            data[key] = np.load(fpath)
     return data
 
 
@@ -131,6 +141,28 @@ def check_shapes(
             if idxs and len(idxs) != target_dim:
                 warnings.append(
                     f"ys target_dim={target_dim} but cost target_state_selection.indices has {len(idxs)} entries"
+                )
+
+        ys_tau = data.get("ys_torque_right")
+        app_tau = data.get("applied_torque_right")
+        if ys_tau is not None:
+            if ys_tau.ndim != 2:
+                errors.append(f"ys_torque_right must be 2D, got {ys_tau.shape}")
+            elif ys_tau.shape[0] != N:
+                errors.append(f"ys_torque_right first dim {ys_tau.shape[0]} != N={N}")
+        if app_tau is not None:
+            if app_tau.ndim != 2:
+                errors.append(f"applied_torque_right must be 2D, got {app_tau.shape}")
+            elif app_tau.shape[0] != N:
+                errors.append(f"applied_torque_right first dim {app_tau.shape[0]} != N={N}")
+        if ys_tau is not None and app_tau is not None:
+            if ys_tau.shape != app_tau.shape:
+                errors.append(
+                    f"torque shape mismatch: ys_torque_right{ys_tau.shape} vs applied_torque_right{app_tau.shape}"
+                )
+            elif ys_tau.shape[1] != 7:
+                warnings.append(
+                    f"torque right-arm dim is {ys_tau.shape[1]} (expected 7 for current setup)"
                 )
 
     return errors, warnings
@@ -234,6 +266,7 @@ def plot_qpos_vs_ys(
     data: Dict[str, np.ndarray],
     cost_params: dict | None,
     data_dir: str,
+    dt: float = 1.0,
     save_path: str | None = None,
     no_show: bool = False,
 ) -> None:
@@ -278,7 +311,7 @@ def plot_qpos_vs_ys(
     q_sel = qpos[:, idxs]
     err = q_sel - ys
     n_dim = ys.shape[1]
-    t = np.arange(qpos.shape[0])
+    t = np.arange(qpos.shape[0], dtype=float) * float(dt)
 
     # 차원이 많아도 읽기 좋게 최대 4열로 배치
     ncols = min(4, n_dim) if n_dim > 0 else 1
@@ -303,6 +336,9 @@ def plot_qpos_vs_ys(
 
     for d in range(n_dim, len(axes_flat)):
         axes_flat[d].axis("off")
+    for ax in axes_flat:
+        if ax.has_data():
+            ax.set_xlabel("time [s]")
 
     fig.suptitle(f"qpos(target indices) vs ys  |  {os.path.basename(data_dir)}", fontsize=12)
     fig.tight_layout(rect=[0, 0.02, 1, 0.95])
@@ -326,6 +362,9 @@ def plot_qpos_vs_ys(
 
     for d in range(n_dim, len(axes_err_flat)):
         axes_err_flat[d].axis("off")
+    for ax in axes_err_flat:
+        if ax.has_data():
+            ax.set_xlabel("time [s]")
 
     fig_err.suptitle("Tracking Error: qpos(target) - ys", fontsize=12)
     fig_err.tight_layout(rect=[0, 0.02, 1, 0.95])
@@ -356,6 +395,153 @@ def plot_qpos_vs_ys(
         plt.show()
 
 
+def plot_torque_vs_ref(
+    data: Dict[str, np.ndarray],
+    data_dir: str,
+    dt: float = 1.0,
+    save_path: str | None = None,
+    no_show: bool = False,
+) -> bool:
+    """
+    ys 기반 reference torque와 실제 applied torque 비교 그래프.
+
+    Returns:
+        bool: 토크 플롯이 실제로 생성되었으면 True, 아니면 False.
+    """
+    try:
+        import matplotlib.pyplot as plt
+    except Exception as ex:
+        print(f"[Plot] matplotlib import 실패: {ex}")
+        return False
+
+    ys_tau = data.get("ys_torque_right")
+    app_tau = data.get("applied_torque_right")
+    if ys_tau is None or app_tau is None:
+        print("[Plot] torque compare 파일이 없어 토크 그래프를 생략합니다.")
+        return False
+    if ys_tau.ndim != 2 or app_tau.ndim != 2 or ys_tau.shape != app_tau.shape:
+        print(f"[Plot] torque shape 오류: ys_ref{None if ys_tau is None else ys_tau.shape}, applied{None if app_tau is None else app_tau.shape}")
+        return False
+
+    err = app_tau - ys_tau
+    n_dim = ys_tau.shape[1]
+    t = np.arange(ys_tau.shape[0], dtype=float) * float(dt)
+
+    ncols = min(4, n_dim) if n_dim > 0 else 1
+    nrows = int(np.ceil(n_dim / ncols))
+
+    fig, axes = plt.subplots(
+        nrows=nrows,
+        ncols=ncols,
+        figsize=(4.2 * ncols, 2.8 * nrows),
+        sharex=True,
+        squeeze=False,
+    )
+    axes_flat = axes.flatten()
+    for d in range(n_dim):
+        ax = axes_flat[d]
+        ax.plot(t, app_tau[:, d], label=f"applied_tau[{d}]", linewidth=1.3)
+        ax.plot(t, ys_tau[:, d], label=f"ys_ref_tau[{d}]", linewidth=1.1, alpha=0.9)
+        ax.set_title(f"Torque dim {d}")
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=8, loc="best")
+    for d in range(n_dim, len(axes_flat)):
+        axes_flat[d].axis("off")
+    for ax in axes_flat:
+        if ax.has_data():
+            ax.set_xlabel("time [s]")
+    fig.suptitle(f"Applied Torque vs ys-Ref Torque  |  {os.path.basename(data_dir)}", fontsize=12)
+    fig.tight_layout(rect=[0, 0.02, 1, 0.95])
+
+    fig_err, axes_err = plt.subplots(
+        nrows=nrows,
+        ncols=ncols,
+        figsize=(4.2 * ncols, 2.6 * nrows),
+        sharex=True,
+        squeeze=False,
+    )
+    axes_err_flat = axes_err.flatten()
+    rmse_per_dim = np.sqrt(np.mean(err * err, axis=0))
+    for d in range(n_dim):
+        ax = axes_err_flat[d]
+        ax.plot(t, err[:, d], linewidth=1.1)
+        ax.axhline(0.0, color="k", linewidth=0.8, alpha=0.5)
+        ax.set_title(f"Error dim {d}  RMSE={rmse_per_dim[d]:.4f}")
+        ax.grid(True, alpha=0.3)
+    for d in range(n_dim, len(axes_err_flat)):
+        axes_err_flat[d].axis("off")
+    for ax in axes_err_flat:
+        if ax.has_data():
+            ax.set_xlabel("time [s]")
+    fig_err.suptitle("Torque Error: applied - ys_ref", fontsize=12)
+    fig_err.tight_layout(rect=[0, 0.02, 1, 0.95])
+
+    print(
+        "[Plot] torque RMSE:",
+        float(np.sqrt(np.mean(err * err))),
+        "| per-dim:",
+        np.round(rmse_per_dim, 6),
+    )
+
+    if save_path:
+        root, ext = os.path.splitext(save_path)
+        if not ext:
+            ext = ".png"
+            save_path = root + ext
+        torque_save = f"{root}_torque{ext}"
+        torque_err_save = f"{root}_torque_error{ext}"
+        os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
+        fig.savefig(torque_save, dpi=140, bbox_inches="tight")
+        fig_err.savefig(torque_err_save, dpi=140, bbox_inches="tight")
+        print(f"[Plot] 저장: {torque_save}")
+        print(f"[Plot] 저장: {torque_err_save}")
+
+    if no_show:
+        plt.close(fig)
+        plt.close(fig_err)
+    else:
+        plt.show()
+
+    return True
+
+
+def summarize_torque_gap(data: Dict[str, np.ndarray]) -> Tuple[dict | None, List[str]]:
+    """
+    저장된 오른팔 토크 비교:
+      ys_torque_right_traj.npy vs applied_torque_right_traj.npy
+    """
+    warnings: List[str] = []
+    ys_tau = data.get("ys_torque_right")
+    app_tau = data.get("applied_torque_right")
+    if ys_tau is None or app_tau is None:
+        return None, warnings
+    if ys_tau.shape != app_tau.shape or ys_tau.ndim != 2:
+        return None, warnings
+
+    valid = np.isfinite(ys_tau).all(axis=1) & np.isfinite(app_tau).all(axis=1)
+    if not np.any(valid):
+        warnings.append("torque compare: no finite rows to compare")
+        return None, warnings
+
+    d = app_tau[valid] - ys_tau[valid]
+    rmse_dim = np.sqrt(np.mean(d * d, axis=0))
+    mae_dim = np.mean(np.abs(d), axis=0)
+    stat = {
+        "n_rows": int(valid.sum()),
+        "shape": tuple(int(x) for x in ys_tau.shape),
+        "rmse": float(np.sqrt(np.mean(d * d))),
+        "mae": float(np.mean(np.abs(d))),
+        "max_abs": float(np.max(np.abs(d))),
+        "rmse_dim": rmse_dim,
+        "mae_dim": mae_dim,
+    }
+    if stat["rmse"] > 5.0:
+        warnings.append(
+            f"torque compare: large gap detected (RMSE={stat['rmse']:.3f}) between applied and ys_ref torques"
+        )
+    return stat, warnings
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Sanity check episode trajectory npy files")
     p.add_argument("--data_dir", required=True, help="Episode directory containing *_traj.npy")
@@ -364,7 +550,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--plot_tracking",
         action="store_true",
-        help="qpos(target indices)와 ys_traj를 겹쳐서 그리고 오차 그래프도 표시",
+        help=(
+            "qpos(target indices) vs ys 그래프를 항상 표시하고, "
+            "토크 파일이 있으면 ys_ref torque vs applied torque 그래프도 추가로 표시"
+        ),
     )
     p.add_argument(
         "--plot_save_path",
@@ -388,6 +577,14 @@ def main() -> None:
 
     system_params = load_yaml(args.system_params) if os.path.exists(args.system_params) else None
     cost_params = load_yaml(args.cost_params) if os.path.exists(args.cost_params) else None
+    dt = 1.0
+    if isinstance(system_params, dict):
+        try:
+            dt = float(system_params.get("system", {}).get("time_step", 1.0))
+        except Exception:
+            dt = 1.0
+    if not np.isfinite(dt) or dt <= 0.0:
+        dt = 1.0
 
     data = load_episode_data(data_dir)
 
@@ -402,6 +599,9 @@ def main() -> None:
         errors.extend(e)
         warnings.extend(w)
 
+    torque_stat, torque_warn = summarize_torque_gap(data)
+    warnings.extend(torque_warn)
+
     print("=" * 70)
     print("Episode Data Sanity Check")
     print("=" * 70)
@@ -410,6 +610,9 @@ def main() -> None:
     print("[Summary]")
     for name in ["qpos", "qvel", "input", "M", "CG", "ys"]:
         print("  " + summarize_array(name, data[name]))
+    for name in ["ys_torque_right", "applied_torque_right"]:
+        if name in data:
+            print("  " + summarize_array(name, data[name]))
 
     if "ys" in data and data["ys"].ndim == 2:
         ys = data["ys"]
@@ -418,6 +621,16 @@ def main() -> None:
         print(f"  shape        : {ys.shape}")
         print(f"  unique_count : {np.unique(ys).size}")
         print(f"  first_rows   : {np.round(ys[:5], 6)}")
+
+    if torque_stat is not None:
+        print("")
+        print("[torque compare] applied - ys_ref")
+        print(f"  rows/shape   : {torque_stat['n_rows']} / {torque_stat['shape']}")
+        print(f"  RMSE (all)   : {torque_stat['rmse']:.6f}")
+        print(f"  MAE  (all)   : {torque_stat['mae']:.6f}")
+        print(f"  max|diff|    : {torque_stat['max_abs']:.6f}")
+        print(f"  RMSE per-dim : {np.round(torque_stat['rmse_dim'], 6)}")
+        print(f"  MAE  per-dim : {np.round(torque_stat['mae_dim'], 6)}")
 
     print("")
     print("[Findings]")
@@ -436,6 +649,15 @@ def main() -> None:
             data=data,
             cost_params=cost_params,
             data_dir=data_dir,
+            dt=dt,
+            save_path=args.plot_save_path,
+            no_show=args.no_show,
+        )
+        print("[Plot] torque compare (if torque files exist)")
+        plot_torque_vs_ref(
+            data=data,
+            data_dir=data_dir,
+            dt=dt,
             save_path=args.plot_save_path,
             no_show=args.no_show,
         )

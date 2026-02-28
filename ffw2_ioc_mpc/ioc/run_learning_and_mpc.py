@@ -15,7 +15,7 @@ IOC 학습 파이프라인 전체 실행 스크립트.
 
 사용법:
     python -m ffw2_ioc_mpc.ioc.run_learning_and_mpc \
-        --data_dir  data/raw/frrrepisode_000_20260223_204925 \
+        --data_dir  data/raw/episode_000_20260224_153814 \
         --output_dir configs/learned_params
 
 """

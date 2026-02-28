@@ -243,7 +243,9 @@ class KKTBuilder:
             csc_i = ca.reshape(lam_i, 1, -1) @ C_i_m       # scalar (1, 1)
             csc_list.append(csc_i)
 
-        csc_expr = ca.vertcat(*csc_list)   # (e, 1)
+        # n_c == 0 인 경우 csc_i들이 "희소 0 스칼라"로 쌓일 수 있어
+        # 이후 IPOPT가 제약벡터 g를 dense vector로 요구할 때 assert에 걸립니다.
+        csc_expr = ca.densify(ca.vertcat(*csc_list))   # (e, 1)
 
         # ── 7. 공통 입력 인자 목록 ─────────────────────────────────────
         # Um_data_sym 대신 U_sym을 라그랑지안에 사용하므로,

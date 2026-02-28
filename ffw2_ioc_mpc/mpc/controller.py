@@ -107,6 +107,15 @@ class MPCController:
         self.N_p = mpc_config.get('prediction_horizon', 20)
         self.N_c = min(mpc_config.get('control_horizon', 1), self.N_p)
 
+        # 입력 경계 (NLP 내부에서 직접 적용; teleop 사후 clip과 일치시키기 위함)
+        self.enable_input_bounds = bool(mpc_config.get('enable_input_bounds', True))
+        self.u_min = float(mpc_config.get('u_min', -100.0))
+        self.u_max = float(mpc_config.get('u_max', 100.0))
+        if self.u_min >= self.u_max:
+            raise ValueError(
+                f"입력 경계 설정 오류: u_min({self.u_min}) >= u_max({self.u_max})"
+            )
+
         # 학습된 θ* (set_learned_parameters 호출 전까지 None)
         self.learned_theta: Optional[np.ndarray] = None     
 
@@ -114,6 +123,8 @@ class MPCController:
         self._solver            : Optional[ca.Function] = None
         self._lbg               : Optional[ca.DM]       = None
         self._ubg               : Optional[ca.DM]       = None
+        self._lbx               : Optional[ca.DM]       = None
+        self._ubx               : Optional[ca.DM]       = None
         self._n_g               : int                    = 0
 
         # 파라미터 벡터 차원 (빌드 후 설정)
@@ -131,6 +142,10 @@ class MPCController:
         print(f"  식별된 제약 조건            : {len(self.cons)}개 "
               f"({sum(pc.num_ineq for pc in self.cons)}개 부등식)")
         print(f"  종단 비용                   : {self.cfg.get('enable_terminal_cost', False)}")
+        if self.enable_input_bounds:
+            print(f"  입력 경계                   : [{self.u_min}, {self.u_max}]")
+        else:
+            print("  입력 경계                   : 비활성화")
         print("=" * 60)
 
     # ================================================================
@@ -249,6 +264,8 @@ class MPCController:
         sol = self._solver(
             x0   = u_init,
             p    = p_val,
+            lbx  = self._lbx,
+            ubx  = self._ubx,
             lbg  = self._lbg,
             ubg  = self._ubg,
         )
@@ -388,6 +405,15 @@ class MPCController:
         self._ubg    = ca.DM(ubg)
 
         n_opt = n_u * N_c
+        if self.enable_input_bounds:
+            lbx = np.full(n_opt, self.u_min, dtype=float)
+            ubx = np.full(n_opt, self.u_max, dtype=float)
+        else:
+            lbx = np.full(n_opt, -np.inf, dtype=float)
+            ubx = np.full(n_opt,  np.inf, dtype=float)
+        self._lbx = ca.DM(lbx)
+        self._ubx = ca.DM(ubx)
+
         print(f"  NLP 빌드 완료")
         print(f"    최적화 변수 : {n_opt}  (N_c={N_c}, n_u={n_u})")
         print(f"    파라미터 dim: {self._p_dim}")
