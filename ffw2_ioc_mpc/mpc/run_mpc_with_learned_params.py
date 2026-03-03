@@ -73,9 +73,6 @@ DEFAULT_MPC_CONFIG = {
     "terminal_cost_weight": 1.0,
 }
 
-ARM_ACT_INDICES = list(range(9, 23))  # input_traj(31) 중 arm torque 14축
-
-
 def load_yaml(path: str) -> dict:
     with open(path, "r") as f:
         return yaml.safe_load(f) or {}
@@ -96,6 +93,35 @@ def resolve_project_path(path: str) -> str:
     if os.path.isabs(path):
         return path
     return os.path.join(PROJECT_ROOT, path)
+
+
+def resolve_input_actuator_indices(sys_cfg: dict, raw_input_dim: int) -> list[int]:
+    indices = sys_cfg.get("input_actuator_indices", None)
+    if indices is not None:
+        idx = [int(i) for i in indices]
+    else:
+        input_dim = int(sys_cfg["input_dimension"])
+        if input_dim == 7:
+            idx = list(range(16, 23))
+        elif input_dim == 14:
+            idx = list(range(9, 23))
+        elif input_dim == raw_input_dim:
+            idx = list(range(raw_input_dim))
+        else:
+            raise ValueError(
+                "input_actuator_indices가 없고 input_dimension에 대한 기본 매핑을 결정할 수 없습니다. "
+                f"(input_dimension={input_dim}, raw_input_dim={raw_input_dim})"
+            )
+
+    if len(idx) != int(sys_cfg["input_dimension"]):
+        raise ValueError(
+            f"입력 인덱스 개수({len(idx)}) != input_dimension({sys_cfg['input_dimension']})"
+        )
+    if min(idx) < 0 or max(idx) >= raw_input_dim:
+        raise ValueError(
+            f"입력 인덱스 범위 오류: [{min(idx)}, {max(idx)}], raw_input_dim={raw_input_dim}"
+        )
+    return idx
 
 
 def get_default_data_dir_from_learning_summary(learned_dir: str) -> str | None:
@@ -169,6 +195,7 @@ def build_identified_constraints(
     builder_config: dict,
     learned_dir: str,
     use_identified_constraints: bool,
+    input_actuator_indices: List[int],
 ) -> List[Any]:
     """
     학습 결과 폴더의 active_constraint_indices.npy를 읽어 식별된 제약을 재구성합니다.
@@ -190,8 +217,8 @@ def build_identified_constraints(
         print("  식별된 활성 제약 없음 → 제약 없이 MPC 실행")
         return []
 
-    # IOC와 동일하게 arm torque 14축만 사용하도록 입력 슬라이스
-    raw_input_arm = raw["input"][:, ARM_ACT_INDICES]
+    # IOC와 동일한 입력 채널 슬라이스
+    raw_input_arm = raw["input"][:, input_actuator_indices]
 
     data_processor = DataProcessor(system_params, processing_config)
     states_seg, inputs_seg = data_processor.process_demonstration(
@@ -234,6 +261,7 @@ def build_controller_and_runtime(
     theta_star: np.ndarray,
     raw: dict,
     step_idx: int,
+    input_actuator_indices: List[int],
 ) -> Tuple[MPCController, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     DynamicsModel / StageCost / MPCController를 구성하고,
@@ -245,7 +273,8 @@ def build_controller_and_runtime(
     dynamics_model = DynamicsModel(
         dt=sys_cfg["time_step"],
         model_xml_path=xml_path,
-        input_dim=sys_cfg["input_dimension"],  # 현재 프로젝트는 14
+        input_dim=sys_cfg["input_dimension"],
+        actuator_indices=input_actuator_indices,
     )
 
     stage_cost = ParametricStageCost(
@@ -427,6 +456,11 @@ def main() -> None:
     print(f"  MPC config  : {mpc_config}")
 
     raw = load_episode_data(data_dir)
+    input_actuator_indices = resolve_input_actuator_indices(
+        sys_cfg=system_params["system"],
+        raw_input_dim=raw["input"].shape[1],
+    )
+    print(f"  input_actuator_indices: {input_actuator_indices}")
 
     identified_constraints = build_identified_constraints(
         raw=raw,
@@ -435,6 +469,7 @@ def main() -> None:
         builder_config=builder_config,
         learned_dir=learned_dir,
         use_identified_constraints=(not args.no_identified_constraints),
+        input_actuator_indices=input_actuator_indices,
     )
 
     controller, current_state, target_ys, M_data_mpc, CG_data_mpc = build_controller_and_runtime(
@@ -445,6 +480,7 @@ def main() -> None:
         theta_star=theta_star,
         raw=raw,
         step_idx=args.step_idx,
+        input_actuator_indices=input_actuator_indices,
     )
 
     print("\n[MPC 실행 입력 요약]")

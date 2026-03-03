@@ -72,6 +72,14 @@ class IOCOptimizer:
                     random_init_scale   : float  (기본: 0.01)
                     l1_reg_lambda       : float  (기본: 0.0)
                     l1_reg_nu           : float  (기본: 0.0)
+                    l2_reg_theta        : float  (기본: 0.0)
+                    l2_reg_nu           : float  (기본: 0.0)
+                    l2_reg_lambda       : float  (기본: 0.0)
+                    r_diag_balance_weight: float (기본: 0.0)
+                    q_diag_balance_weight: float (기본: 0.0)
+                    r_trace_target      : float  (기본: 1.0)
+                    enable_q_trace_constraint: bool (기본: False)
+                    q_trace_target      : float  (기본: 1.0)
                     ipopt_print_level   : int    (기본: 3)
                     ipopt_hessian_approximation: str | None (기본: 'limited-memory')
                     ipopt_sb            : 'yes' | 'no' | None
@@ -84,6 +92,10 @@ class IOCOptimizer:
                     enable_chunked_ipopt: bool   (기본: True)
                     ipopt_chunk_max_iter: int    (기본: 50)
                     log_grad_every_sec  : float  (기본: 10.0)
+                    require_success_for_selection: bool (기본: True)
+                    max_grad_inf_for_selection : float | None (기본: None)
+                    max_csc_inf_for_selection  : float | None (기본: None)
+                    max_r_norm_abs_for_selection: float | None (기본: None)
         """
         self.kkt  = kkt_builder
         self.cost = stage_cost
@@ -96,6 +108,7 @@ class IOCOptimizer:
         # 차원
         self.theta_dim       = kkt_builder.theta_dim
         self.nu_dim          = kkt_builder.state_dim
+        self.input_dim       = kkt_builder.input_dim
         self.lambda_flat_dim = kkt_builder.e * kkt_builder.num_total_constraints
         self.U_dim           = kkt_builder.e * kkt_builder.input_dim
         self.e               = kkt_builder.e
@@ -109,8 +122,20 @@ class IOCOptimizer:
         self._r_norm_func = ca.Function(
             'r_norm',
             [theta_sym_tmp],
-            [stage_cost.normalization_constraint_expr(theta_sym_tmp)]
+            [stage_cost.normalization_constraint_expr(
+                theta_sym_tmp,
+                target_trace=self.cfg.get('r_trace_target', 1.0),
+            )]
         )
+        self._q_norm_func = ca.Function(
+            'q_norm',
+            [theta_sym_tmp],
+            [stage_cost.q_normalization_constraint_expr(
+                theta_sym_tmp,
+                target_trace=self.cfg.get('q_trace_target', 1.0),
+            )]
+        )
+        self._Q_from_theta_func, self._R_from_theta_func = stage_cost.get_Q_R_functions()
 
         print("=" * 60)
         print("IOCOptimizer 초기화 완료")
@@ -120,6 +145,9 @@ class IOCOptimizer:
         print(f"  lambda_flat_dim : {self.lambda_flat_dim}")
         print(f"  총 최적화 변수  : {self.total_vars}")
         print(f"  초기 추정 횟수  : {self.cfg.get('num_initial_guesses', 3)}")
+        print(f"  해 선택 기준     : "
+              f"require_success={self.cfg.get('require_success_for_selection', True)}, "
+              f"max_grad_inf={self.cfg.get('max_grad_inf_for_selection', None)}")
         print("=" * 60)
 
     def _start_solver_spinner(self, label: str = "IPOPT solve"):
@@ -229,6 +257,13 @@ class IOCOptimizer:
 
         best_result = None
         best_obj    = np.inf
+        best_diag: Optional[Dict[str, float]] = None
+        best_msg: str = ""
+
+        require_success = bool(self.cfg.get('require_success_for_selection', True))
+        max_grad_inf = self.cfg.get('max_grad_inf_for_selection', None)
+        max_csc_inf = self.cfg.get('max_csc_inf_for_selection', None)
+        max_r_norm_abs = self.cfg.get('max_r_norm_abs_for_selection', None)
 
         for trial in range(num_tries):
             print(f"\n{'─'*55}")
@@ -280,17 +315,46 @@ class IOCOptimizer:
                         extra_parts.append(f"t_proc={float(t_proc):.3f}s")
                     print("    stats: " + "  ".join(extra_parts))
 
+                reject_reasons = []
+                if require_success and (not success):
+                    reject_reasons.append("success=False")
+                if (max_grad_inf is not None) and (diag['grad_norm_inf'] > float(max_grad_inf)):
+                    reject_reasons.append(
+                        f"grad_inf={diag['grad_norm_inf']:.3e} > {float(max_grad_inf):.3e}"
+                    )
+                if (max_csc_inf is not None) and (diag['csc_inf'] > float(max_csc_inf)):
+                    reject_reasons.append(
+                        f"csc_inf={diag['csc_inf']:.3e} > {float(max_csc_inf):.3e}"
+                    )
+                if (max_r_norm_abs is not None) and (diag['r_norm_abs'] > float(max_r_norm_abs)):
+                    reject_reasons.append(
+                        f"|r_norm|={diag['r_norm_abs']:.3e} > {float(max_r_norm_abs):.3e}"
+                    )
+
+                if reject_reasons:
+                    print("    후보 제외: " + ", ".join(reject_reasons))
+                    continue
+
                 if obj_val < best_obj:
                     best_obj    = obj_val
                     best_result = opt_vars.copy()
+                    best_diag = diag
+                    best_msg = msg
 
             except Exception as ex:
                 warnings.warn(f"  [Trial {trial+1}] 예외 발생: {ex}")
                 continue
 
         if best_result is None:
+            criteria_desc = (
+                f"require_success={require_success}, "
+                f"max_grad_inf={max_grad_inf}, "
+                f"max_csc_inf={max_csc_inf}, "
+                f"max_r_norm_abs={max_r_norm_abs}"
+            )
             raise RuntimeError(
-                f"모든 {num_tries}번의 시도에서 최적화에 실패했습니다."
+                f"모든 {num_tries}번의 시도에서 선택 기준을 만족한 해를 찾지 못했습니다. "
+                f"(선택 기준: {criteria_desc})"
             )
 
         theta_star = best_result[:self.theta_dim]
@@ -300,6 +364,13 @@ class IOCOptimizer:
 
         print(f"\n{'='*55}")
         print(f"  학습 완료  최적 obj = {best_obj:.4e}")
+        if best_diag is not None:
+            print(
+                "  선택 해 진단        : "
+                f"success_msg='{best_msg}', "
+                f"||grad||inf={best_diag['grad_norm_inf']:.3e}, "
+                f"csc_inf={best_diag['csc_inf']:.3e}"
+            )
         print(f"  theta_star (처음 5개) : {theta_star[:5].round(6)}")
         print(f"  λ 합 (활성 제약 지표): {lam_flat.sum():.4f}")
 
@@ -359,15 +430,49 @@ class IOCOptimizer:
         if l1_nu > 0:
             obj += l1_nu * ca.sum1(ca.fabs(nu_s))
 
+        # L2 regularization
+        l2_theta = self.cfg.get('l2_reg_theta', 0.0)
+        l2_nu    = self.cfg.get('l2_reg_nu', 0.0)
+        l2_lam   = self.cfg.get('l2_reg_lambda', 0.0)
+        if l2_theta > 0:
+            obj += l2_theta * ca.sumsqr(theta_s)
+        if l2_nu > 0:
+            obj += l2_nu * ca.sumsqr(nu_s)
+        if l2_lam > 0:
+            obj += l2_lam * ca.sumsqr(lam_flat_s)
+
+        # Optional diagonal-balance regularization to avoid extreme R/Q anisotropy
+        Q_mat_expr, R_mat_expr = self.cost.get_Q_R_expr(theta_s)
+        r_diag_balance_w = self.cfg.get('r_diag_balance_weight', 0.0)
+        if r_diag_balance_w > 0:
+            r_diag = ca.diag(R_mat_expr)
+            r_target = self.cfg.get('r_trace_target', 1.0) / float(self.input_dim)
+            obj += r_diag_balance_w * ca.sumsqr(r_diag - r_target)
+        q_diag_balance_w = self.cfg.get('q_diag_balance_weight', 0.0)
+        if q_diag_balance_w > 0:
+            q_diag = ca.diag(Q_mat_expr)
+            q_target = self.cfg.get('q_trace_target', 1.0) / float(self.cost.target_dim)
+            obj += q_diag_balance_w * ca.sumsqr(q_diag - q_target)
+
         # 등식 제약
         csc_expr    = self.csc_func(
             theta_s, nu_s, lam_flat_s,
             U_dm, Xm_dm, Um_dm, ys_dm, M_dm, CG_dm
         )
-        r_norm_expr = self.cost.normalization_constraint_expr(theta_s)
+        r_norm_expr = self.cost.normalization_constraint_expr(
+            theta_s,
+            target_trace=self.cfg.get('r_trace_target', 1.0),
+        )
+        g_terms = [csc_expr, r_norm_expr]
+        if self.cfg.get('enable_q_trace_constraint', False):
+            q_norm_expr = self.cost.q_normalization_constraint_expr(
+                theta_s,
+                target_trace=self.cfg.get('q_trace_target', 1.0),
+            )
+            g_terms.append(q_norm_expr)
         # IPOPT(CasADi)는 NLPSOL_G가 dense vector이길 기대합니다.
         # csc_expr가 희소 zero 벡터인 경우(후보 제약 0개) assert가 발생할 수 있어 densify 처리.
-        g_expr      = ca.densify(ca.vertcat(csc_expr, r_norm_expr))   # (e+1, 1)
+        g_expr = ca.densify(ca.vertcat(*g_terms))
 
         # 변수 경계
         lbw = np.concatenate([
@@ -377,7 +482,7 @@ class IOCOptimizer:
         ubw = np.full(self.total_vars, np.inf)
 
         # 등식 제약 경계
-        n_g   = e + 1
+        n_g   = e + 1 + (1 if self.cfg.get('enable_q_trace_constraint', False) else 0)
         lbg   = np.zeros(n_g)
         ubg   = np.zeros(n_g)
 
@@ -543,6 +648,8 @@ class IOCOptimizer:
                 'fun' : self._scipy_r_norm,
             },
         ]
+        if self.cfg.get('enable_q_trace_constraint', False):
+            constraints.append({'type': 'eq', 'fun': self._scipy_q_norm})
 
         res = minimize(
             fun        = self._scipy_obj,
@@ -578,6 +685,27 @@ class IOCOptimizer:
         l1_nu  = self.cfg.get('l1_reg_nu', 0.0)
         if l1_lam > 0: obj += l1_lam * float(np.abs(lam).sum())
         if l1_nu  > 0: obj += l1_nu  * float(np.abs(nu).sum())
+
+        l2_theta = self.cfg.get('l2_reg_theta', 0.0)
+        l2_nu    = self.cfg.get('l2_reg_nu', 0.0)
+        l2_lam   = self.cfg.get('l2_reg_lambda', 0.0)
+        if l2_theta > 0: obj += l2_theta * float(theta @ theta)
+        if l2_nu > 0: obj += l2_nu * float(nu @ nu)
+        if l2_lam > 0: obj += l2_lam * float(lam @ lam)
+
+        r_diag_balance_w = self.cfg.get('r_diag_balance_weight', 0.0)
+        q_diag_balance_w = self.cfg.get('q_diag_balance_weight', 0.0)
+        if r_diag_balance_w > 0 or q_diag_balance_w > 0:
+            Q_val = np.array(self._Q_from_theta_func(theta), dtype=float)
+            R_val = np.array(self._R_from_theta_func(theta), dtype=float)
+            if r_diag_balance_w > 0:
+                r_diag = np.diag(R_val)
+                r_target = self.cfg.get('r_trace_target', 1.0) / float(self.input_dim)
+                obj += r_diag_balance_w * float(np.sum((r_diag - r_target) ** 2))
+            if q_diag_balance_w > 0:
+                q_diag = np.diag(Q_val)
+                q_target = self.cfg.get('q_trace_target', 1.0) / float(self.cost.target_dim)
+                obj += q_diag_balance_w * float(np.sum((q_diag - q_target) ** 2))
         return obj
 
     def _scipy_csc(self, w, Xm, Um, ys, M, CG, U_flat) -> np.ndarray:
@@ -590,6 +718,9 @@ class IOCOptimizer:
 
     def _scipy_r_norm(self, w) -> float:
         return float(self._r_norm_func(w[:self.theta_dim]))
+
+    def _scipy_q_norm(self, w) -> float:
+        return float(self._q_norm_func(w[:self.theta_dim]))
 
     def _compute_trial_diagnostics(
         self,

@@ -1,7 +1,7 @@
 processing:
   segment_strategy: fixed_length
-  segment_length_seconds: 1.0
-  segment_start_seconds: 1.0
+  segment_length_seconds: 2.0
+  segment_start_seconds: 5.0
   filter_type: savgol
   savgol_window_length: 11
   savgol_polyorder: 3
@@ -15,12 +15,27 @@ constraint_builder:
 
 optimizer:
   solver: ipopt
-  max_iterations: 2000
-  num_initial_guesses: 8
+  max_iterations: 150
+  num_initial_guesses: 6
   initial_guesses_strategy: random
-  random_init_scale: 0.011
+  random_init_scale: 0.001
   l1_reg_lambda: 1.0e-5
   l1_reg_nu: 0.0
+  l2_reg_theta: 1.0e-3
+  l2_reg_nu: 1.0e-4
+  l2_reg_lambda: 0.0
+  r_diag_balance_weight: 5.0e-2
+  q_diag_balance_weight: 5.0e-2
+  r_trace_target: 1.0
+  enable_q_trace_constraint: false
+  q_trace_target: 500.0
+
+  # 학습 결과 선택 게이트 (best-effort 수렴 우선)
+  # IPOPT가 max_iter 도달로 success=False여도 KKT 품질이 좋은 해를 채택
+  require_success_for_selection: false
+  max_grad_inf_for_selection: 0.3
+  max_csc_inf_for_selection: 1.0e-3
+  max_r_norm_abs_for_selection: 5.0e-3
   tol: 1.0e-3
 
   ipopt_print_level: 0

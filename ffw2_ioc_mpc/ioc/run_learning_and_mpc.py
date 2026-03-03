@@ -124,6 +124,38 @@ def load_episode_data(data_dir: str) -> dict:
     return data
 
 
+def resolve_input_actuator_indices(sys_cfg: dict, raw_input_dim: int) -> list[int]:
+    """
+    IOC 학습에서 사용할 input_traj 채널 인덱스를 결정합니다.
+    """
+    indices = sys_cfg.get("input_actuator_indices", None)
+    if indices is not None:
+        idx = [int(i) for i in indices]
+    else:
+        input_dim = int(sys_cfg["input_dimension"])
+        if input_dim == 7:
+            idx = list(range(16, 23))      # right arm motor only
+        elif input_dim == 14:
+            idx = list(range(9, 23))       # both arms
+        elif input_dim == raw_input_dim:
+            idx = list(range(raw_input_dim))
+        else:
+            raise ValueError(
+                "input_actuator_indices가 없고 input_dimension에 대한 기본 매핑을 결정할 수 없습니다. "
+                f"(input_dimension={input_dim}, raw_input_dim={raw_input_dim})"
+            )
+
+    if len(idx) != int(sys_cfg["input_dimension"]):
+        raise ValueError(
+            f"입력 인덱스 개수({len(idx)}) != input_dimension({sys_cfg['input_dimension']})"
+        )
+    if min(idx) < 0 or max(idx) >= raw_input_dim:
+        raise ValueError(
+            f"입력 인덱스 범위 오류: [{min(idx)}, {max(idx)}], raw_input_dim={raw_input_dim}"
+        )
+    return idx
+
+
 def prepare_kkt_inputs(
     states_seg : np.ndarray,   # (e+1, 75)
     inputs_seg : np.ndarray,   # (e,   31)
@@ -151,7 +183,7 @@ def prepare_kkt_inputs(
     CG_data = KKTBuilder.prepare_CG_data([CG_seg[i] for i in range(e)]) # (37, e)
 
     Xm_data = states_seg.T    # (75, e+1)
-    Um_data = inputs_seg.T    # (31, e)
+    Um_data = inputs_seg.T    # (input_dim, e)
     ys_data = ys_seg.T        # (target_dim, e)
 
     print(f"\n[KKT 입력 준비 완료]  e={e} steps")
@@ -220,10 +252,17 @@ def run_pipeline(args):
     if not os.path.isabs(xml_path):
         xml_path = os.path.join(PROJECT_ROOT, xml_path)
 
+    raw = load_episode_data(args.data_dir)
+    input_actuator_indices = resolve_input_actuator_indices(
+        sys_cfg=sys_cfg,
+        raw_input_dim=raw["input"].shape[1],
+    )
+
     dynamics_model = DynamicsModel(
         dt             = sys_cfg['time_step'],
         model_xml_path = xml_path,
-        input_dim      = sys_cfg['input_dimension'],   # 31
+        input_dim      = sys_cfg['input_dimension'],
+        actuator_indices=input_actuator_indices,
     )
 
     data_processor = DataProcessor(system_params, processing_config)
@@ -235,14 +274,13 @@ def run_pipeline(args):
     )
 
     # ── 3. 데이터 로드 및 전처리 ───────────────────────────────────
-    raw = load_episode_data(args.data_dir)
-    ARM_ACT_INDICES = list(range(9, 23))   # 인덱스 9~22, 총 14개
-    raw['input'] = raw['input'][:, ARM_ACT_INDICES]   # (N, 31) → (N, 14)
+    raw['input'] = raw['input'][:, input_actuator_indices]
+    print(f"  [입력 채널] actuator indices: {input_actuator_indices}")
     
     states_seg, inputs_seg = data_processor.process_demonstration(
         raw_qpos   = raw['qpos'],    # (N, 38)
         raw_qvel   = raw['qvel'],    # (N, 37)
-        raw_inputs = raw['input'],   # (N, 31)
+        raw_inputs = raw['input'],   # (N, input_dim)
     )
 
     # segment_start_seconds → start_idx 계산

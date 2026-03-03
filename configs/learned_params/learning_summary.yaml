@@ -1,7 +1,7 @@
-R_trace: 1.0000178281500578
+R_trace: 1.0004815289289588
 active_constraint_names: []
-data_dir: /home/seohy/colcon_ws/src/ffw2_ioc_mpc/data/raw/episode_000_pd_livekbd_20260227_155852
-e_steps: 50
-final_objective: 0.0014479421234686043
+data_dir: /home/seohy/colcon_ws/src/ffw2_ioc_mpc/data/raw/episode_000_pd_func_20260228_223729
+e_steps: 100
+final_objective: 1785.8307786311957
 n_active_constraints: 0
-theta_dim: 133
+theta_dim: 56

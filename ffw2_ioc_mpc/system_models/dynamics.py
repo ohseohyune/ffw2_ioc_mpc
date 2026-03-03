@@ -1,6 +1,7 @@
 import casadi as ca
 import numpy as np
 import mujoco
+from typing import Optional, Sequence, List
 
 
 class DynamicsModel:
@@ -17,7 +18,13 @@ class DynamicsModel:
         - 기존 하드코딩된 self.input_dim = 14 제거
     """
 
-    def __init__(self, dt: float, model_xml_path: str, input_dim: int):
+    def __init__(
+        self,
+        dt: float,
+        model_xml_path: str,
+        input_dim: Optional[int] = None,
+        actuator_indices: Optional[Sequence[int]] = None,
+    ):
         """
         Args:
             dt            : 제어 주기 (초), system_params.yaml의 time_step
@@ -40,8 +47,10 @@ class DynamicsModel:
         # 상태 차원: qpos(nq) + qvel(nv) = 75
         self.state_dim = self.nq + self.nv
 
-        # 입력 차원: 외부 주입 (system_params.yaml → input_dimension = 31)
+        # 입력 차원: 외부 주입 (system_params.yaml → input_dimension)
         # ※ model.nu 와 일치해야 함
+        if input_dim is None:
+            input_dim = int(self.mj_model.nu)
         if input_dim != self.mj_model.nu:
             print(
                 f"[DynamicsModel] 참고: input_dim({input_dim})이 model.nu({self.mj_model.nu})와 다릅니다. "
@@ -49,6 +58,7 @@ class DynamicsModel:
             )
             # input_dim = self.mj_model.nu
         self.input_dim = input_dim
+        self.input_actuator_indices = self._resolve_input_actuator_indices(actuator_indices)
 
         # ── 2. CasADi 심볼릭 변수 및 파라미터 정의 ────────────────
         self.x_sym   = ca.MX.sym('x',  self.state_dim)
@@ -143,22 +153,74 @@ class DynamicsModel:
 
     #     return ca.MX(B_np)
 
+    def _resolve_input_actuator_indices(
+        self,
+        actuator_indices: Optional[Sequence[int]],
+    ) -> List[int]:
+        """
+        입력 벡터 u의 각 채널이 어떤 MuJoCo actuator를 의미하는지 결정합니다.
+        """
+        if actuator_indices is None:
+            if self.input_dim == 7:
+                indices = list(range(16, 23))      # arm_r_joint1~7
+            elif self.input_dim == 14:
+                indices = list(range(9, 23))       # arm_l_joint1~7 + arm_r_joint1~7
+            elif self.input_dim == self.mj_model.nu:
+                indices = list(range(self.mj_model.nu))
+            else:
+                raise ValueError(
+                    "actuator_indices가 지정되지 않았고 input_dim에 대한 기본 매핑도 없습니다. "
+                    f"(input_dim={self.input_dim}, model.nu={self.mj_model.nu})"
+                )
+        else:
+            indices = [int(i) for i in actuator_indices]
+
+        if len(indices) != self.input_dim:
+            raise ValueError(
+                f"actuator_indices 길이({len(indices)}) != input_dim({self.input_dim})"
+            )
+        if not indices:
+            raise ValueError("actuator_indices가 비어 있습니다.")
+
+        lo = min(indices)
+        hi = max(indices)
+        if lo < 0 or hi >= self.mj_model.nu:
+            raise ValueError(
+                "actuator_indices 범위 오류: "
+                f"[{lo}, {hi}] not in [0, {self.mj_model.nu - 1}]"
+            )
+        return indices
+
+    def _is_motor_joint_actuator(self, act_id: int) -> bool:
+        model = self.mj_model
+        trn_type = model.actuator_trntype[act_id]
+        if trn_type != mujoco.mjtTrn.mjTRN_JOINT:
+            return False
+        gain_type = model.actuator_gaintype[act_id]
+        bias_type = model.actuator_biastype[act_id]
+        return (
+            gain_type == mujoco.mjtGain.mjGAIN_FIXED
+            and bias_type == mujoco.mjtBias.mjBIAS_NONE
+        )
+
     def _build_input_mapping(self) -> ca.MX:
-        B_np = np.zeros((self.nv, self.input_dim))  # (37, 14)
+        B_np = np.zeros((self.nv, self.input_dim))
         model = self.mj_model
 
-        # ARM_ACT_INDICES와 동일한 순서로 motor만 추출
-        # input_traj에서 슬라이싱한 순서: act_id 9~22 (arm_l 9~15, arm_r 16~22)
-        arm_act_ids = list(range(9, 23))   # 14개
+        for col_idx, act_id in enumerate(self.input_actuator_indices):
+            if not self._is_motor_joint_actuator(act_id):
+                continue
 
-        for col_idx, act_id in enumerate(arm_act_ids):
             joint_id = int(model.actuator_trnid[act_id, 0])
-            dof_id   = int(model.jnt_dofadr[joint_id])
+            dof_id = int(model.jnt_dofadr[joint_id])
             gear_val = float(model.actuator_gear[act_id, 0])
             B_np[dof_id, col_idx] = gear_val if gear_val != 0.0 else 1.0
 
-        print(f"[DynamicsModel] B 행렬 구축 완료: shape={B_np.shape}, "
-              f"비영(motor) 항목 수={int(np.count_nonzero(B_np))}")
+        print(
+            f"[DynamicsModel] B 행렬 구축 완료: shape={B_np.shape}, "
+            f"비영(motor) 항목 수={int(np.count_nonzero(B_np))}, "
+            f"actuator_indices={self.input_actuator_indices}"
+        )
         return ca.MX(B_np)
     
     def _define_casadi_dynamics(self) -> ca.Function:

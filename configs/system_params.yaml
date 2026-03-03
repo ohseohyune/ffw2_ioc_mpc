@@ -6,9 +6,9 @@
 
 system:
   state_dimension: 75          # nq (38) + nv (37) = 75
-  input_dimension: 14          # input_traj.npy의 두 번째 차원 (model.nu = 31)
+  input_dimension: 7           # 오른팔 토크 채널 수 (arm_r_joint1~7)
+  input_actuator_indices: [16, 17, 18, 19, 20, 21, 22]  # input_traj(31)에서 사용할 actuator 인덱스
   time_step: 0.02              # teleop_ffw_right_arm_ik.py의 CTRL_DT = 0.02s
   nq: 38                       # qpos_traj.npy의 두 번째 차원
   nv: 37                       # qvel_traj.npy의 두 번째 차원
-  BASE_DIR : /home/seohy/colcon_ws/src/ffw2_ioc_mpc  # 프로젝트 루트 디렉토리 절대 경로
-  model_xml_path: BASE_DIR/system_models/mujoco_models/scene_ffw_sg2.xml   # MuJoCo 모델 파일 경로 (프로젝트 루트 기준)
+  model_xml_path: ffw2_ioc_mpc/system_models/mujoco_models/scene_ffw_sg2.xml

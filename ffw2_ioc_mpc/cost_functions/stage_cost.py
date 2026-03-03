@@ -101,6 +101,25 @@ class ParametricStageCost:
     # ------------------------------------------------------------------
     # 공개 인터페이스
     # ------------------------------------------------------------------
+    def get_Q_R_expr(self, theta_sym: ca.MX):
+        """
+        주어진 theta 심볼에서 Q, R의 CasADi 표현식을 반환합니다.
+
+        Args:
+            theta_sym (ca.MX): (theta_dim,)
+
+        Returns:
+            Tuple[ca.MX, ca.MX]: (Q_mat, R_mat)
+        """
+        theta_LQ = theta_sym[: self.num_elements_LQ]
+        theta_LR = theta_sym[self.num_elements_LQ: self.num_elements_LQ + self.num_elements_LR]
+
+        LQ = self._build_lower_triangular(theta_LQ, self.target_dim)
+        LR = self._build_lower_triangular(theta_LR, self.input_dim)
+        Q_mat = LQ @ LQ.T
+        R_mat = LR @ LR.T
+        return Q_mat, R_mat
+
     def get_casadi_function(self) -> ca.Function:
         """
         스테이지 비용을 계산하는 CasADi Function을 반환합니다.
@@ -129,16 +148,9 @@ class ParametricStageCost:
         # shape: (target_dim, 1)
 
         # ── 2. theta 분해 → L_Q, L_R ────────────────────────────────────
-        theta_LQ = theta_sym[: self.num_elements_LQ]
-        theta_LR = theta_sym[self.num_elements_LQ: self.num_elements_LQ + self.num_elements_LR]
-
-        LQ = self._build_lower_triangular(theta_LQ, self.target_dim)
-        LR = self._build_lower_triangular(theta_LR, self.input_dim)
-
         # Q = L_Q @ L_Q^T  ≥ 0  (PSD 보장)
         # R = L_R @ L_R^T  ≥ 0  (PSD 보장)
-        Q_mat = LQ @ LQ.T
-        R_mat = LR @ LR.T
+        Q_mat, R_mat = self.get_Q_R_expr(theta_sym)
 
         # ── 3. 스테이지 비용 계산 ────────────────────────────────────────
         err = selected_x - ys_sym                                    # (target_dim, 1)
@@ -167,23 +179,16 @@ class ParametricStageCost:
         """
         theta_sym = ca.MX.sym('theta', self.theta_dim)
 
-        theta_LQ = theta_sym[: self.num_elements_LQ]
-        theta_LR = theta_sym[self.num_elements_LQ: self.num_elements_LQ + self.num_elements_LR]
-
-        LQ = self._build_lower_triangular(theta_LQ, self.target_dim)
-        LR = self._build_lower_triangular(theta_LR, self.input_dim)
-
-        Q_mat = LQ @ LQ.T
-        R_mat = LR @ LR.T
+        Q_mat, R_mat = self.get_Q_R_expr(theta_sym)
 
         Q_func = ca.Function('Q_from_theta', [theta_sym], [Q_mat], ['theta'], ['Q'])
         R_func = ca.Function('R_from_theta', [theta_sym], [R_mat], ['theta'], ['R'])
         return Q_func, R_func
 
-    def normalization_constraint_expr(self, theta_sym: ca.MX) -> ca.MX:
+    def normalization_constraint_expr(self, theta_sym: ca.MX, target_trace: float = 1.0) -> ca.MX:
         """
         논문의 스케일링 정규화 조건을 CasADi 심볼 표현식으로 반환합니다.
-            sum(diag(R)) == 1   →   g(theta) = sum(R_ii) - 1 == 0
+            sum(diag(R)) == target_trace   →   g(theta) = sum(R_ii) - target_trace == 0
 
         이 표현식은 IOC 최적화 단계에서 등식 제약 조건으로 추가하세요:
             opti.subject_to(stage_cost.normalization_constraint_expr(theta_var) == 0)
@@ -192,13 +197,20 @@ class ParametricStageCost:
             theta_sym (ca.MX): theta 심볼릭 변수 (theta_dim,)
 
         Returns:
-            ca.MX: scalar 심볼 표현식  sum(R_ii) - 1
+            ca.MX: scalar 심볼 표현식  sum(R_ii) - target_trace
         """
-        theta_LR = theta_sym[self.num_elements_LQ: self.num_elements_LQ + self.num_elements_LR]
-        LR = self._build_lower_triangular(theta_LR, self.input_dim)
-        R_mat = LR @ LR.T
+        _, R_mat = self.get_Q_R_expr(theta_sym)
         trace_R = ca.trace(R_mat)   # sum of diagonal elements
-        return trace_R - 1.0
+        return trace_R - float(target_trace)
+
+    def q_normalization_constraint_expr(self, theta_sym: ca.MX, target_trace: float = 1.0) -> ca.MX:
+        """
+        Q trace 정규화 조건을 CasADi 심볼 표현식으로 반환합니다.
+            sum(diag(Q)) == target_trace  →  g(theta) = sum(Q_ii) - target_trace == 0
+        """
+        Q_mat, _ = self.get_Q_R_expr(theta_sym)
+        trace_Q = ca.trace(Q_mat)
+        return trace_Q - float(target_trace)
 
     def theta_init(self, scale: float = 0.1) -> np.ndarray:
         """
